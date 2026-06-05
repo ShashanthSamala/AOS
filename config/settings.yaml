@@ -1,0 +1,84 @@
+# AURA-OS Configuration
+# =====================
+
+# LLM Settings
+llm:
+  model: "tinyllama"
+  api_url: "http://localhost:11434/api/generate"
+  temperature: 0.1
+  timeout: 60
+  max_retries: 2
+
+# Perception Settings
+perception:
+  camera_index: 0
+  max_hands: 1
+  detection_confidence: 0.8    # raised from 0.7 — reduces phantom hand detections
+  tracking_confidence: 0.5
+  gesture_cooldown_ms: 500     # minimum time between gesture actions
+  cursor_smoothing_alpha: 0.35 # EMA factor for POINT cursor smoothing (0.1 = very smooth, 1.0 = raw/no filter)
+
+  # Corner reach — virtual margin mapping (central zone of camera → full screen)
+  edge_margin: 0.10            # 10% margin each side; 0.10..0.90 camera → 0..screen
+
+  # False-positive rejection gates
+  min_landmark_visibility: 0.6 # handedness classification confidence required to accept hand
+  min_palm_span: 0.04          # minimum wrist→middle-MCP distance (normalised); rejects noise blobs
+
+  # Angle-based gesture classification thresholds (degrees)
+  finger_extend_angle: 160     # PIP joint angle above which a finger is "extended"
+  thumb_extend_angle: 150      # IP joint angle above which the thumb is "out"
+  pinch_ratio_threshold: 0.30  # pinch if thumb-index dist < 30% of palm span (scale-invariant)
+
+# Gesture-to-Action Mappings
+# 6 Core Gestures:
+# - POINT: Point finger for mouse cursor movement (cursor follows hand position)
+# - PINCH: Two fingers touching = click
+# - THREE: Three fingers = open customizable app (default: code, cycle with PEACE gesture)
+# - FOUR: Four fingers = open browser
+# - FIVE: Five fingers = minimize all windows
+# - FIST: Closed fist = take screenshot
+gesture_map:
+  # NOTE: POINT and PINCH are handled directly in gesture_engine.py and
+  # kernel_loop.py (early-return path) for low-latency cursor/click control.
+  # Changing them here has NO effect — edit the engine/kernel code instead.
+  POINT: "move_cursor"      # (handled directly — this entry is for documentation only)
+  PINCH: "click"            # (handled directly — this entry is for documentation only)
+  THREE: "open_app"         # Open customizable app (THREE_FINGER_APP)
+  FOUR: "open_browser"      # Four fingers for browser
+  FIVE: "minimize_all"      # Five fingers to minimize all
+  FIST: "screenshot"        # Fist gesture for screenshot
+
+# App Customization
+three_finger_app: "code"    # App opened by THREE gesture (can be: firefox, libreoffice, thunar, etc.)
+favorite_apps:              # Apps to cycle through with app_cycle_gesture
+  - "code"
+  - "firefox"
+  - "libreoffice"
+  - "thunar"
+app_cycle_gesture: "PEACE"  # Gesture to cycle through THREE gesture app (or null to disable)
+
+# Kernel Settings
+kernel:
+  mode: "direct"                 # "direct" = gesture_map lookup, "llm" = always use LLM
+  engine: "orchestrator"         # "orchestrator" (async pipeline) or "sync" (legacy KernelLoop)
+  scheduler_max_queue: 100
+  context_history_size: 10
+  ingest_queue_size: 5           # asyncio.Queue maxsize for vision frame buffer
+  temporal_filter_ms: 300        # Deduplication window in milliseconds
+  app_context_enabled: true      # Active window awareness (default enabled)
+  app_context_update_freq: 5     # Update app context every N gestures
+
+# Resource Management
+resources:
+  enabled: true                  # Enable resource monitoring
+  cpu_threshold: 80              # % - DEGRADED mode triggers above this
+  ram_threshold: 85              # % - DEGRADED mode triggers above this
+  battery_threshold: 10          # % - CRITICAL mode (laptop only)
+  queue_threshold: 80            # % of max_queue - DEGRADED mode above this
+  check_interval: 2              # Seconds between resource checks
+
+# Logging
+logging:
+  level: "INFO"
+  log_file: "logs/aura.log"
