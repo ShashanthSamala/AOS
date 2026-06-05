@@ -5,6 +5,7 @@
 import requests
 import json
 import time
+from kernel.app_context import AppContextManager
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 CURRENT_MODEL = "tinyllama"
@@ -19,7 +20,9 @@ click, new_tab, close_tab, scroll_up, scroll_down,
 volume_up, volume_down, play_pause, open_browser,
 show_desktop, lock_screen, open_terminal, do_nothing"""
 
-def ask_brain(gesture: str, context: str = "desktop", battery: int = 100) -> dict:
+def ask_brain(gesture: str, context: str = None, battery: int = 100) -> dict:
+    if context is None:
+        context = "DESKTOP"
     prompt = f"""Gesture detected: {gesture}
 Active application: {context}
 Battery level: {battery}%
@@ -63,9 +66,13 @@ if __name__ == "__main__":
     print("AURA-OS Layer 4 — Brain Test")
     print("=" * 40)
 
+    _ctx = AppContextManager(throttle_s=0.4)
+
     for gesture in test_gestures:
-        result = ask_brain(gesture, context="browser", battery=75)
+        live_context = _ctx.get_context()
+        result = ask_brain(gesture, context=live_context, battery=75)
         print(f"Gesture: {gesture}")
+        print(f"Context: {live_context}")
         print(f"Action:  {result.get('action')}")
         print(f"Reason:  {result.get('reasoning')}")
         print(f"Latency: {result.get('latency_ms')}ms")

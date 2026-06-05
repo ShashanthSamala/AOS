@@ -2,8 +2,8 @@
 # gesture.py — Week 1+3: Camera + Gesture Classification
 # Author: Samala Shashanth | Project: AURA-OS
 
-import cv2
-import mediapipe as mp
+import cv2  # type: ignore
+import mediapipe as mp  # type: ignore
 
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
@@ -14,24 +14,29 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.5
 )
 
-def count_fingers(landmarks):
+def count_fingers(landmarks, hand_label="Right"):
     tips    = [8, 12, 16, 20]
     knuckle = [6, 10, 14, 18]
-    count = 0
+    count: int = 0
 
-    # Thumb — compare x instead of y (horizontal movement)
-    if landmarks[4].x < landmarks[3].x:  # for right hand
-        count += 1
+    # Thumb — compare x (direction depends on handedness)
+    if hand_label == "Right":
+        if landmarks[4].x < landmarks[3].x:
+            count += 1
+    else:  # Left hand
+        if landmarks[4].x > landmarks[3].x:
+            count += 1
 
     # Four fingers
-    for tip_id, mcp_id in zip(tips, knuckle):
-        if landmarks[tip_id].y < landmarks[mcp_id].y:
-            count += 1
+    count = count + sum(
+        1 for tip_id, mcp_id in zip(tips, knuckle)
+        if landmarks[tip_id].y < landmarks[mcp_id].y
+    )
 
     return count
 
-def classify_gesture(landmarks):
-    fingers = count_fingers(landmarks)
+def classify_gesture(landmarks, hand_label="Right"):
+    fingers = count_fingers(landmarks, hand_label)
     if fingers == 0: return "FIST"
     if fingers == 1: return "POINT"
     if fingers == 2: return "PEACE"
@@ -57,10 +62,15 @@ while True:
     result = hands.process(rgb)
 
     if result.multi_hand_landmarks:
-        for hand_landmarks in result.multi_hand_landmarks:
+        for idx, hand_landmarks in enumerate(result.multi_hand_landmarks):
+            # Extract handedness for correct thumb detection
+            hand_label = "Right"
+            if result.multi_handedness:
+                hand_label = result.multi_handedness[idx].classification[0].label
+
             mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-            gesture = classify_gesture(hand_landmarks.landmark)
+            gesture = classify_gesture(hand_landmarks.landmark, hand_label)
 
             # Display gesture name on screen
             cv2.putText(frame, gesture, (10, 60),

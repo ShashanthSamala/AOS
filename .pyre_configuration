@@ -1,0 +1,11 @@
+{
+    "source_directories": ["."],
+    "search_path": [
+        ".",
+        {"site-package": "cv2"},
+        {"site-package": "mediapipe"},
+        {"site-package": "pyautogui"},
+        "venv/lib/python3.12/site-packages"
+    ],
+    "python_version": "3.12"
+}
