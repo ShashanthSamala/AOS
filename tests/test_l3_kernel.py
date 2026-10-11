@@ -39,7 +39,7 @@ def test_overflow_150_into_100():
         # Invariant: queue size must never exceed max
         if sched.size > 100:
             print(f"  [FAIL] Queue exceeded max at task #{i}: size={sched.size}")
-            return False
+            assert sched.size <= 100, f"Queue exceeded max at task #{i}: size={sched.size}"
 
     # Queue should hold exactly 100 (tasks 50–149)
     queue_ok = sched.size == 100
@@ -72,7 +72,7 @@ def test_overflow_150_into_100():
     print(f"  Overflow reason   : {len(overflow_reasons)}/50  [{reason_ok}]")
     print(f"  FIFO order intact : {fifo_ok}")
     print(f"  [{status}] Overflow scenario completed")
-    return ok
+    assert ok, "Scheduler overflow invariants failed"
 
 
 # ── Vector 2: Task State Machine Lifecycle ────────────────────────────────
@@ -114,7 +114,7 @@ def test_task_lifecycle():
     print(f"  done state        : {s3_ok}  (ts_valid: {s3_ts}, result_ok: {s3_result})")
     print(f"  failed state      : {s4_ok}  (error_in_result: {s4_result})")
     print(f"  [{status}] State machine lifecycle verified")
-    return ok
+    assert ok, "Task lifecycle invariants failed"
 
 
 # ── Vector 3: Concurrent Task Insertion (Thread Safety) ──────────────────
@@ -179,7 +179,7 @@ def test_concurrent_insertion():
         for e in errors:
             print(f"    {e}")
     print(f"  [{status}] Concurrent insertion test (deadlock/exception gate)")
-    return ok
+    assert ok, "Concurrent insertion test failed"
 
 
 # ── Vector 4: Requeue Integrity ──────────────────────────────────────────
@@ -222,7 +222,7 @@ def test_requeue_integrity():
     print(f"  Status reset      : {state_ok}  (status={peek.status})")
     print(f"  FIFO order        : {order_ok}  (order={order})")
     print(f"  [{status}] Requeue integrity verified")
-    return ok
+    assert ok, "Task requeue integrity failed"
 
 
 # ── Vector 5: get_queue_status Counters ──────────────────────────────────
@@ -258,7 +258,7 @@ def test_queue_status_counters():
     print(f"  Completed : {status_dict['completed']} (expected 10)  [{completed_ok}]")
     print(f"  Failed    : {status_dict['failed']} (expected 5)   [{failed_ok}]")
     print(f"  [{status}] Status counter accuracy verified")
-    return ok
+    assert ok, "Queue status counters are incorrect"
 
 
 # ── Vector 6: Async Event Loop Compatibility ─────────────────────────────
@@ -296,7 +296,10 @@ def test_async_event_loop_compatibility():
         deadlocked = False
     except Exception as e:
         print(f"  [FAIL] Event loop error: {type(e).__name__}: {e}")
-        return False
+        executor.shutdown(wait=True)
+        raise AssertionError(
+            f"Event loop failed: {type(e).__name__}: {e}"
+        ) from e
 
     executor.shutdown(wait=True)
 
@@ -314,7 +317,7 @@ def test_async_event_loop_compatibility():
     if not queue_bounded:
         print(f"  [FINDING] Same TOCTOU race as L3-003 — Scheduler needs mutex.")
     print(f"  [{status}] Async event loop compatibility verified")
-    return ok
+    assert ok, "Async event loop compatibility failed"
 
 
 # ── Runner ────────────────────────────────────────────────────────────────

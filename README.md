@@ -1,148 +1,276 @@
-# AURA-OS — Gesture-Driven Agentic Operating System
+# AOS — Agentic Operating System
 
-> **Control your desktop with hand gestures.** AURA-OS uses a webcam, MediaPipe hand tracking, and a local LLM to translate real-time hand gestures into OS-level actions — clicks, scrolling, app launching, and more.
+## What is AOS?
+
+Everything changes with time — that is the nature of time itself.
+
+Computers evolved from room-sized machines to devices that fit in a pocket,
+not by adding more, but by removing what was unnecessary and replacing it
+with something better. This has always been true of both hardware and
+software.
+
+When I enrolled in my B.Tech (AI & Data Science) program, the standard
+curriculum followed a familiar path: programming languages, data structures,
+operating systems, databases. At some point I stopped and asked a question
+that bothered me:
+
+**Why has the operating system stayed fundamentally the same since it was
+invented?**
+
+The purpose of an operating system is to be the interface between hardware
+and user. That was true in the 1970s and it is still the definition today.
+But for most of that time, the user had to adapt to the machine — learning
+its conventions, its file systems, its input devices. That was acceptable in
+the early years. Then AI arrived and introduced new possibilities across
+every domain.
+
+I decided to do something about it. That decision became AOS.
 
 ---
 
-## ✨ Features
+AOS is not AI controlling your entire system. It is about making an existing
+operating system smarter in ways that are actually useful to the person using
+it — starting with me, as a student who wanted a system that understood my
+context and responded to my intent.
 
-- **6 core gestures** — POINT (cursor), PINCH (click), FIST, THREE, FOUR, FIVE — each mapped to a desktop action
-- **Real-time hand tracking** — MediaPipe Hands + OpenCV for low-latency finger detection
-- **LLM reasoning fallback** — unmapped gestures are interpreted by a local TinyLlama model via Ollama
-- **MCP tool server** — modular tool registry for mouse, keyboard, and system control
-- **Resource-aware kernel** — CPU/RAM/battery monitoring with automatic degraded mode
-- **Configurable** — YAML-based settings for gestures, LLM, kernel mode, and resource thresholds
-- **Left/right hand support** — handedness-aware thumb detection via MediaPipe
+The interaction layer was the other half of the idea. Keyboards and mice are
+not bad — they are simply not the only option. They are devices we invented
+to communicate with machines, not the only way communication can work.
+Touchscreens exist but are expensive. A camera, however, is already in most
+computers. Gesture control through a camera requires no additional hardware.
+Voice is the most natural human output. Eyes and neural interfaces are
+further out — but the architecture should not assume they are impossible.
 
-## 🏗️ Architecture
+These two ideas combined into one project: an OS layer that understands
+intent expressed through hands, voice, and eventually other human signals,
+and translates that intent into action — without requiring the user to adapt
+to the machine.
+
+**Current implementation:** Camera-based gesture input and local KittenTTS speech output are implemented. Voice input and speech-to-text (STT) are not yet integrated; eyes and neural interfaces remain future directions.
+
+---
+
+## Architecture
+
+The rule that governs every design decision in AOS:
+
+> **The AI proposes. The kernel decides. ActionValidator sits between
+> every AI output and every tool call.**
+
+The AI is not the operating system kernel. It reasons and suggests. The
+kernel controls what is allowed, what tools exist, execution, timeouts,
+retries, resource constraints, and logging. This separation is intentional
+and non-negotiable.
+
+
+
+
+
+### Full Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                    main.py                       │
-│              (Boot & orchestration)              │
-├──────────────┬───────────────┬───────────────────┤
-│  Perception  │    Kernel     │    Foundation     │
-│              │               │                   │
-│ gesture_     │ kernel_loop   │ llm_interface     │
-│  engine      │ scheduler     │ prompt_template   │
-│ gesture_map  │ context_mgr   │ action_validator  │
-│ gesture_     │ resource_mgr  │                   │
-│  stabilizer  │ app_context   │                   │
-│              │ task_retry    │                   │
-│              │ metrics       │                   │
-├──────────────┴───────────────┴───────────────────┤
-│                 Tools (MCP)                      │
-│   mouse_tools · keyboard_tools · system_tools    │
-└──────────────────────────────────────────────────┘
+                         ┌──────────────────────────┐
+                         │          HUMAN           │
+                         │                          │
+                         │  Hands   Voice   Eyes    │
+                         │         Neural*          │
+                         └────────────┬─────────────┘
+                                      │
+                                      ▼
+                    ┌─────────────────────────────────┐
+                    │       PERCEPTION LAYER          │
+                    │                                 │
+                    │  MediaPipe Tasks API            │
+                    │  Gesture detection              │
+                    │  Landmark tracking              │
+                    │        │                        │
+                    │        ▼                        │
+                    │  HumanIntentSignal              │
+                    │  ┌─────────────────────────┐   │
+                    │  │ modality  (gesture/voice)│   │
+                    │  │ intent    (click/open..) │   │
+                    │  │ target    (pos/app name) │   │
+                    │  │ confidence               │   │
+                    │  │ timestamp                │   │
+                    │  │ raw       (metadata)     │   │
+                    │  └─────────────────────────┘   │
+                    └────────────────┬────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────┐
+                    │          AOS KERNEL             │
+                    │                                 │
+                    │  CentralOrchestrator            │
+                    │    TemporalStateFilter          │
+                    │    ResourceMonitor              │
+                    │    ContextManager               │
+                    │    Scheduler                    │
+                    │    TaskRetry                    │
+                    │    MetricsCollector             │
+                    │    Logger                       │
+                    │                                 │
+                    │         Intent Router           │
+                    │              │                  │
+                    │    ┌─────────┴──────────┐       │
+                    │    ▼                    ▼       │
+                    │  Direct path          LLM path  │
+                    │  (low latency)        (semantic) │
+                    │  move_cursor          qwen:4b  │
+                    │  click                via Ollama│
+                    └────────────────┬────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────┐
+                    │        FOUNDATION LAYER         │
+                    │                                 │
+                    │  ┌───────────────────────────┐  │
+                    │  │     ActionValidator        │  │
+                    │  │                           │  │
+                    │  │  Validates every AI output│  │
+                    │  │  before any tool executes │  │
+                    │  │                           │  │
+                    │  │  Cannot be bypassed       │  │
+                    │  │  Cannot be removed        │  │
+                    │  │  Cannot be routed around  │  │
+                    │  └───────────────────────────┘  │
+                    │                                 │
+                    │  LLMInterface  PromptTemplate   │
+                    └────────────────┬────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────┐
+                    │       CAPABILITY LAYER          │
+                    │                                 │
+                    │  Tool Registry (MCP server)     │
+                    │                                 │
+                    │  mouse_tools                    │
+                    │    click · move · scroll        │
+                    │                                 │
+                    │  keyboard_tools                 │
+                    │    type · hotkey · press        │
+                    │                                 │
+                    │  system_tools                   │
+                    │    open_app · screenshot        │
+                    │    volume · minimize · lock     │
+                    └────────────────┬────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────┐
+                    │      PLATFORM ADAPTER           │
+                    │                                 │
+                    │  X11 (current — legacy)         │
+                    │  KDE Wayland ← Phase 4 target   │
+                    └────────────────┬────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────┐
+                    │            LINUX                │
+                    │  Kernel · Desktop · Devices     │
+                    └────────────────┬────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────┐
+                    │         OUTPUT LAYER            │
+                    │                                 │
+                    │  KittenTTS                      │
+                    │  Local CPU-only TTS             │
+                    │  Daemon thread — non-blocking   │
+                    │  Always on the machine          │
+                    │  with the speakers              │
+                    └─────────────────────────────────┘
+
+* future research direction
 ```
 
-## 🖐️ Gesture Mappings
+---
 
-| Gesture | Fingers | Action | Description |
-|---------|---------|--------|-------------|
-| **POINT** | ☝️ Index only | `move_cursor` | Cursor follows fingertip position |
-| **PINCH** | 👌 Thumb + index touch | `click` | Click at last cursor position |
-| **FIST** | ✊ None | `screenshot` | Take a screenshot |
-| **THREE** | 🤟 Three fingers | `open_app` | Open configurable app (default: VS Code) |
-| **FOUR** | 🖐️ Four fingers | `open_browser` | Open Firefox |
-| **FIVE** | 🖐️ All five | `minimize_all` | Show desktop |
-| **PEACE** | ✌️ Two fingers | App cycle | Cycle through favorite apps list |
+### Data Flow — One Complete Cycle
 
-## 🚀 Quick Start
+```
+Camera frame
+     │
+     ▼
+MediaPipe Tasks API
+     │
+     ▼
+HumanIntentSignal(modality="gesture", intent="click", ...)
+     │
+     ▼
+CentralOrchestrator._ingest_loop()
+     │
+     ▼
+TemporalStateFilter   ← drops duplicates
+     │
+     ▼
+Intent Router
+     │
+     ├── Direct intent?  → execute immediately (no LLM)
+     │
+     └── Semantic intent? → LLMInterface.ask()
+                                │
+                                ▼
+                           qwen:4b (Ollama)
+                                │
+                                ▼
+                         ActionValidator    ← SAFETY GATE
+                                │
+                                ▼
+                         Tool execution
+                                │
+                                ▼
+                         ContextManager.add_intent()
+                                │
+                                ▼
+                         KittenTTS.speak()  ← daemon thread
+```
 
-### Prerequisites
+---
 
-- Python 3.10+
-- Webcam
-- Linux desktop (X11 or Wayland with XDG support)
-- [Ollama](https://ollama.ai) (optional — for LLM reasoning mode)
+## Hardware
 
-### Installation
+**Development machine:** ThinkPad, Intel i5-4210M, Intel HD 4600 (no CUDA),
+7.6 GB RAM, Arch Linux, KDE Plasma, Wayland
+
+**Target deployment:** Raspberry Pi 5 (Phase 7)
+
+---
+
+## Setup
+
+> Arch Linux only. These instructions do not apply to Ubuntu or Windows.
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/AOS.git
+# Clone
+git clone -b prototype https://github.com/ShashanthSamala/AOS.git
 cd AOS
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 
 # Install dependencies
-pip install opencv-python mediapipe pyautogui pyyaml requests psutil
+pip install -r requirements.txt
 
-# (Optional) Pull TinyLlama for LLM reasoning mode
-ollama pull tinyllama
+# Pull qwen:4b via Ollama
+ollama pull qwen:4b
 ```
 
-### Run
-
-```bash
-source venv/bin/activate
-python main.py
-```
-
-A small camera preview window will appear. Show hand gestures to control your desktop. Press **Q** on the video window or **Ctrl+C** to stop.
-
-## ⚙️ Configuration
-
-All settings are in [`config/settings.yaml`](config/settings.yaml):
-
-- **`perception.gesture_cooldown_ms`** — Minimum time between gesture actions (default: 500ms)
-- **`kernel.mode`** — `"direct"` (gesture map lookup) or `"llm"` (always use LLM reasoning)
-- **`gesture_map`** — Customize which gesture triggers which action
-- **`three_finger_app`** — App opened by the THREE gesture
-- **`favorite_apps`** — List of apps to cycle through with PEACE gesture
-- **`resources`** — CPU/RAM/battery thresholds for degraded mode
-
-## 📁 Project Structure
-
-```
-AOS/
-├── main.py                    # Entry point — boots all layers
-├── config/
-│   └── settings.yaml          # All configuration
-├── perception/                # Camera + gesture detection
-│   ├── gesture_engine.py      # MediaPipe hand tracking engine
-│   ├── gesture_map.py         # Gesture → action mappings
-│   └── gesture_stabilizer.py  # Debouncing / stabilization
-├── kernel/                    # Core OS logic
-│   ├── kernel_loop.py         # Main event loop
-│   ├── scheduler.py           # FIFO task queue
-│   ├── context_manager.py     # Gesture history context
-│   ├── resource_manager.py    # CPU/RAM/battery monitoring
-│   ├── app_context.py         # Active window detection
-│   ├── task_retry.py          # Retry with backoff
-│   ├── metrics.py             # Performance metrics
-│   └── logger.py              # Logging setup
-├── foundation/                # LLM + validation
-│   ├── llm_interface.py       # Ollama API client
-│   ├── prompt_template.py     # System prompts
-│   └── action_validator.py    # Action validation
-├── tools/                     # MCP tool server
-│   ├── mcp_server.py          # Tool registry + executor
-│   ├── mouse_tools.py         # Click, scroll, move
-│   ├── keyboard_tools.py      # Keypress, hotkey, typing
-│   └── system_tools.py        # Apps, volume, screenshot
-└── gesture.py                 # Standalone gesture test script
-```
-
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Hand tracking | MediaPipe Hands |
-| Computer vision | OpenCV |
-| Desktop control | PyAutoGUI |
-| LLM | TinyLlama via Ollama |
-| Config | PyYAML |
-| Resource monitoring | psutil |
-
-## 📄 License
-
-This project is part of a personal portfolio. All rights reserved.
+KittenTTS requires a separate Python 3.11 environment — see
+`perception/tts_engine.py` for setup details.
 
 ---
 
-**Author:** Samala Shashanth  
-**Project:** AURA-OS — Agentic Operating System
+## Running AOS
+
+```bash
+source .venv/bin/activate
+python main.py
+```
+
+AOS will initialize the gesture engine, orchestrator, and LLM interface.
+Point a hand at the camera. POINT moves the cursor. PINCH clicks.
+Other gestures trigger semantic resolution through the kernel.
+
+---
+
+```

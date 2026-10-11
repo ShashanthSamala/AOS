@@ -5,7 +5,7 @@
 #
 # Governs five concurrent subsystems:
 #   1. Async FIFO queue (asyncio.Queue, maxsize=5) — ingests raw tracking frames
-#   2. 300 ms temporal state filter — deduplicates identical prototype_token_id
+#   2. 300 ms temporal state filter — deduplicates identical semantic intents
 #   3. AosInputFrame packing — merges sensor data with desktop metadata
 #   4. Blocking thread-delegated Ollama inference via ThreadPoolExecutor
 #   5. Validation safety gate — drops malformed payloads, forwards good ones
@@ -30,6 +30,10 @@ from foundation.llm_interface import LLMInterface
 from foundation.prompt_template import SYSTEM_PROMPT, build_prompt
 from foundation.action_validator import ActionValidator, ValidationError
 from perception.gesture_map import GestureMap
+from perception.intent_signal import HumanIntentSignal
+from perception.tts_engine import TTSEngine
+
+LEGACY_NON_GESTURE_TOKEN = "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -57,52 +61,78 @@ class AosInputFrame:
     desktop_context: str
     desktop_window_title: str
 
+    # Semantic HumanIntent representation introduced alongside the
+    # legacy prototype token during the incremental kernel migration.
+    #
+    # REMOVE prototype_token_id only when ALL conditions are true:
+    # 1. ContextManager consumes intent_signal, not prototype_token_id.
+    # 2. TemporalStateFilter is rewritten around intent.
+    # 3. CentralOrchestrator has zero runtime references to prototype_token_id.
+    # 4. KernelLoop is migrated away from prototype_token_id or formally retired.
+    # 5. test_l3_kernel.py passes with zero references to prototype_token_id.
+    intent_signal: Optional[HumanIntentSignal] = None
+
 
 # ---------------------------------------------------------------------------
 #  §2  TemporalStateFilter — 300 ms deduplication guard
 # ---------------------------------------------------------------------------
 
+_DIRECT_INTENTS = frozenset({
+    "move_cursor",
+    "click",
+    "open_app",
+    "open_browser",
+    "minimize_all",
+    "screenshot",
+})
+
 class TemporalStateFilter:
-    """Discards consecutive frames carrying the same ``prototype_token_id``
+    """Discards consecutive frames carrying the same semantic intent
     when they arrive within the configured time envelope.
 
-    Tracking gestures (``POINT``) always pass because each frame carries
-    unique spatial data.  ``PINCH`` is also exempted as its frame-count
-    gating already lives in the gesture engine.
+    Tracking/click intents (``move_cursor`` and ``click``) always pass
+    because their event gating already happens upstream.
     """
 
-    _BYPASS_TOKENS = frozenset({"POINT", "PINCH"})
+    _BYPASS_INTENTS = frozenset({"move_cursor", "click"})
 
-    __slots__ = ("_window_s", "_last_token", "_last_mono")
+    __slots__ = ("_window_s", "_last_intent", "_last_mono")
 
     def __init__(self, window_s: float = 0.3):
         self._window_s: float = window_s
-        self._last_token: Optional[str] = None
+        self._last_intent: Optional[str] = None
         self._last_mono: float = -1e9  # seed so first call always passes
 
     def accept(self, frame: AosInputFrame) -> bool:
         """Return ``True`` if *frame* should be processed, ``False`` to
         discard as a redundant duplicate."""
-        token = frame.prototype_token_id
+        signal = frame.intent_signal
 
-        # Fast-path: tracking/click gestures are never deduplicated.
-        if token in self._BYPASS_TOKENS:
-            self._last_token = token
+        if signal is None:
+            return False
+
+        intent = signal.intent
+
+        # Fast-path: tracking/click intents are never deduplicated.
+        if intent in self._BYPASS_INTENTS:
+            self._last_intent = intent
             self._last_mono = frame.timestamp_mono
             return True
 
-        # Temporal dedup: same token within the window → discard.
-        if (token == self._last_token
-                and (frame.timestamp_mono - self._last_mono) < self._window_s):
+        # Temporal dedup: same intent within the window → discard.
+        if (
+            intent == self._last_intent
+            and (frame.timestamp_mono - self._last_mono) < self._window_s
+        ):
             return False
 
-        self._last_token = token
+        self._last_intent = intent
         self._last_mono = frame.timestamp_mono
         return True
 
     def reset(self) -> None:
         """Clear filter state (e.g. on stop/restart)."""
-        self._last_token = None
+        self._last_intent = None
         self._last_mono = -1e9
 
 
@@ -159,6 +189,7 @@ class CentralOrchestrator:
         self.gesture_map = GestureMap(self.config)
         self.mcp = mcp_server
         self.log = get_logger("orchestrator", self.config)
+        self.tts = TTSEngine(self.config)
 
         # Resource monitoring
         resource_cfg = self.config.get("resources", {})
@@ -192,13 +223,29 @@ class CentralOrchestrator:
         gesture engine thread; we only record lightweight telemetry here.
         """
         self.log.info("[INGEST] Bridge thread started")
-        _FAST_PATH_TOKENS = frozenset({"POINT", "PINCH"})
+        _FAST_PATH_INTENTS = frozenset({"move_cursor", "click"})
 
         while self._running and gesture_engine.is_running:
             try:
-                raw_event = gesture_engine.get_gesture(timeout=0.5)
-                if raw_event is None:
+                signal = gesture_engine.get_gesture(timeout=0.5)
+                if signal is None:
                     continue
+
+                # GestureEngine now emits HumanIntentSignal.
+                # Keep the legacy prototype token inside the raw payload
+                # so the existing kernel fast-path remains unchanged.
+                if not isinstance(signal, HumanIntentSignal):
+                    self.log.error(
+                        f"[INGEST] Unexpected perception payload: "
+                        f"{type(signal).__name__}"
+                    )
+                    continue
+
+                raw = signal.raw or {}
+                prototype_token = raw.get(
+                    "gesture",
+                    LEGACY_NON_GESTURE_TOKEN,
+                )
 
                 # Capture monotonic timestamp immediately
                 mono_now = time.monotonic()
@@ -207,18 +254,23 @@ class CentralOrchestrator:
                 ctx_token = self._app_context.get_context()
                 ctx_raw = self._app_context.get_active_window() or ""
 
-                # Pack into canonical frame
+                # Pack HumanIntentSignal into the existing canonical frame.
                 frame = AosInputFrame(
-                    prototype_token_id=raw_event["gesture"],
+                    prototype_token_id=prototype_token,
                     timestamp_mono=mono_now,
-                    fingertip=raw_event.get("fingertip"),
-                    screen_pos=raw_event.get("screen_pos"),
+                    fingertip=raw.get("fingertip"),
+                    screen_pos=raw.get("screen_pos", signal.target),
                     desktop_context=ctx_token,
                     desktop_window_title=ctx_raw,
+                    intent_signal=signal,
                 )
 
-                # POINT / PINCH fast-path: telemetry only, no async overhead
-                if frame.prototype_token_id in _FAST_PATH_TOKENS:
+                # Semantic fast-path: move_cursor / click are handled
+                # immediately without async pipeline overhead.
+                if (
+                    frame.intent_signal is not None
+                    and frame.intent_signal.intent in _FAST_PATH_INTENTS
+                ):
                     self._record_fast_path(frame)
                     continue
 
@@ -245,21 +297,44 @@ class CentralOrchestrator:
             self._ingest_queue.put_nowait(frame)
         except asyncio.QueueFull:
             self.log.debug(
-                f"[INGEST] Queue full — dropped {frame.prototype_token_id}"
+                f"[INGEST] Queue full — dropped {frame.intent_signal.intent if frame.intent_signal else 'UNKNOWN'}"
             )
 
     def _record_fast_path(self, frame: AosInputFrame) -> None:
-        """Record POINT/PINCH telemetry without entering the async pipeline.
+        """Record semantic fast-path intents without entering the async pipeline.
         Kept intentionally minimal to stay within the 20–30 ms budget."""
-        gesture = frame.prototype_token_id
 
-        if gesture == "POINT" and frame.screen_pos:
-            reasoning = f"Cursor tracking at ({frame.screen_pos[0]}, {frame.screen_pos[1]})"
-            self.context.add(gesture, "move_cursor", reasoning)
-        elif gesture == "PINCH":
+        signal = frame.intent_signal
+
+        if signal is None:
+            self.log.error(
+                "[CONTEXT] PINCH fast path missing HumanIntentSignal"
+            )
+            return
+
+        intent = signal.intent
+
+        if intent == "move_cursor" and frame.screen_pos:
+            reasoning = (
+                f"Cursor tracking at "
+                f"({frame.screen_pos[0]}, {frame.screen_pos[1]})"
+            )
+
+            self.context.add_intent(
+                signal,
+                "move_cursor",
+                reasoning,
+            )
+
+        elif intent == "click":
             pos = frame.screen_pos or ("?", "?")
             reasoning = f"Pinch click at {pos}"
-            self.context.add(gesture, "click", reasoning)
+
+            self.context.add_intent(
+                signal,
+                "click",
+                reasoning,
+            )
 
     # ------------------------------------------------------------------
     #  §2–5  Async processing pipeline
@@ -284,12 +359,12 @@ class CentralOrchestrator:
                 # §2 — Temporal state filter (300 ms dedup)
                 if not self._temporal_filter.accept(frame):
                     self.log.debug(
-                        f"[FILTER] Discarded duplicate: {frame.prototype_token_id}"
+                        f"[FILTER] Discarded duplicate: {frame.intent_signal.intent if frame.intent_signal else 'UNKNOWN'}"
                     )
                     continue
 
                 self.log.info(
-                    f"[ORCHESTRATOR] Processing: {frame.prototype_token_id} "
+                    f"[ORCHESTRATOR] Processing: {frame.intent_signal.intent if frame.intent_signal else 'UNKNOWN'} "
                     f"(ctx={frame.desktop_context})"
                 )
 
@@ -303,24 +378,50 @@ class CentralOrchestrator:
                 self.log.info(f"[ORCHESTRATOR] Resolved: {action} ({reasoning})")
 
                 # §5 — Create task and execute with validation safety gate
+                signal = frame.intent_signal
+                if signal is None:
+                    self.log.error(
+                        "[TASK] Normal pipeline missing HumanIntentSignal"
+                    )
+                    continue
+
                 task = Task(
-                    command=frame.prototype_token_id,
+                    command=signal.intent,
                     action=action,
                     parameters=parameters,
                     reasoning=reasoning,
                 )
 
                 result = self._execute_task(task)
+                self._queue_speech_confirmation(action, result)
 
-                # Record context history
-                self.context.add(
-                    frame.prototype_token_id, action, reasoning, result,
-                )
+                # Record context history using the semantic intent.
+                # Do not fabricate a HumanIntentSignal if the migration
+                # invariant is unexpectedly violated.
+                if frame.intent_signal is None:
+                    self.log.error(
+                        "[CONTEXT] Normal pipeline missing HumanIntentSignal"
+                    )
+                else:
+                    self.context.add_intent(
+                        frame.intent_signal,
+                        action,
+                        reasoning,
+                        result,
+                    )
 
-                # Record metrics
+                # Record metrics using the semantic intent.
                 duration_ms = int((time.time() - start_time) * 1000)
+
+                signal = frame.intent_signal
+                if signal is None:
+                    self.log.error(
+                        "[METRICS] Normal pipeline missing HumanIntentSignal"
+                    )
+                    continue
+
                 self.metrics.record_gesture(
-                    gesture=frame.prototype_token_id,
+                    gesture=signal.intent,
                     latency_ms=duration_ms,
                     success=(result.get("status") == "ok"),
                 )
@@ -331,7 +432,7 @@ class CentralOrchestrator:
                     self.log.info(f"[ORCHESTRATOR] Metrics: {stats}")
 
                 self.log.info(
-                    f"[{frame.prototype_token_id}] → {action} | {reasoning}"
+                    f"[{frame.intent_signal.intent if frame.intent_signal else 'UNKNOWN'}] → {action} | {reasoning}"
                 )
 
             except Exception as e:
@@ -347,7 +448,6 @@ class CentralOrchestrator:
         """Determine the action for a frame.  Direct-mapped gestures are
         resolved synchronously; unmapped gestures are sent to the local
         Ollama instance via a blocking executor call (§4)."""
-        gesture = frame.prototype_token_id
 
         # Resource check
         self._resource_state = self.resource_monitor.check(
@@ -355,12 +455,24 @@ class CentralOrchestrator:
             max_queue=self.config.get("kernel", {}).get("scheduler_max_queue", 100),
         )
 
+        signal = frame.intent_signal
+
+        if signal is None:
+            return {
+                "action": "do_nothing",
+                "parameters": {},
+                "reasoning": "Missing HumanIntentSignal",
+                "latency_ms": 0,
+            }
+
+        intent = signal.intent
+
         if self._resource_state == ResourceState.CRITICAL:
-            if not self.gesture_map.is_direct(gesture):
+            if intent not in _DIRECT_INTENTS:
                 return {
                     "action": "do_nothing",
                     "parameters": {},
-                    "reasoning": f"CRITICAL resource state: rejecting {gesture}",
+                    "reasoning": f"CRITICAL resource state: rejecting {intent}",
                     "latency_ms": 0,
                 }
 
@@ -375,7 +487,7 @@ class CentralOrchestrator:
                 return {
                     "action": "do_nothing",
                     "parameters": {},
-                    "reasoning": f"Resource {self._resource_state.value}: skipping LLM for {gesture}",
+                    "reasoning": f"Resource {self._resource_state.value}: skipping LLM for {intent}",
                     "latency_ms": 0,
                 }
 
@@ -390,7 +502,7 @@ class CentralOrchestrator:
 
         # §4 — Blocking Ollama call delegated to ThreadPoolExecutor
         self.log.info(
-            f"[ORCHESTRATOR] LLM inference: {gesture} "
+            f"[ORCHESTRATOR] LLM inference: {intent} "
             f"(ctx={frame.desktop_context}, resource={self._resource_state.value})"
         )
 
@@ -409,13 +521,21 @@ class CentralOrchestrator:
             }
 
     def _try_direct_resolve(self, frame: AosInputFrame) -> Optional[Dict[str, Any]]:
-        """Attempt direct gesture-map resolution.  Returns ``None`` if the
-        gesture should be routed to the LLM."""
-        gesture = frame.prototype_token_id
-        direct_action = self.gesture_map.lookup(gesture)
+        """Resolve a HumanIntentSignal into a direct action.
+
+        Semantic intent is authoritative for generic action resolution.
+        The original gesture is consulted only for gesture-specific policies
+        such as THREE and PEACE.
+        """
+        signal = frame.intent_signal
+        if signal is None:
+            return None
+
+        intent = signal.intent
+        raw_gesture = (signal.raw or {}).get("gesture")
 
         # PEACE — app cycling
-        if gesture == "PEACE" and direct_action is None:
+        if intent == "open_app" and raw_gesture == "PEACE":
             current_idx = self.config.get("app_cycle_index", 0)
             favorite_apps = self.config.get("favorite_apps", ["code", "firefox"])
             next_idx = (current_idx + 1) % len(favorite_apps)
@@ -429,7 +549,7 @@ class CentralOrchestrator:
             }
 
         # THREE — open_app with configured app name
-        if gesture == "THREE" and direct_action == "open_app":
+        if intent == "open_app" and raw_gesture == "THREE":
             app_name = self.config.get("three_finger_app", "code")
             return {
                 "action": "open_app",
@@ -438,12 +558,30 @@ class CentralOrchestrator:
                 "latency_ms": 0,
             }
 
-        # Other direct mappings
-        if direct_action is not None:
+        # Generic semantic open_app fallback.
+        # Gesture-specific open_app policies (THREE/PEACE) are handled above.
+        if intent == "open_app":
             return {
-                "action": direct_action,
+                "action": "open_app",
                 "parameters": {},
-                "reasoning": f"Direct: {gesture} → {direct_action}",
+                "reasoning": "Direct intent: open_app",
+                "latency_ms": 0,
+            }
+
+        # Other semantic direct mappings
+        direct_actions = {
+            "move_cursor",
+            "click",
+            "open_browser",
+            "minimize_all",
+            "screenshot",
+        }
+
+        if intent in direct_actions:
+            return {
+                "action": intent,
+                "parameters": {},
+                "reasoning": f"Direct intent: {intent}",
                 "latency_ms": 0,
             }
 
@@ -460,8 +598,16 @@ class CentralOrchestrator:
             "Window": frame.desktop_window_title,
         }
 
+        signal = frame.intent_signal
+
+        if signal is None:
+            raise ValueError(
+                "CentralOrchestrator requires HumanIntentSignal "
+                "before LLM inference"
+            )
+
         prompt = build_prompt(
-            gesture=frame.prototype_token_id,
+            intent=signal.intent,
             context=frame.desktop_context,
             extra_info=extra_info,
         )
@@ -542,6 +688,43 @@ class CentralOrchestrator:
     #  Lifecycle
     # ------------------------------------------------------------------
 
+    def _queue_speech_confirmation(
+        self,
+        action: str,
+        result: Dict[str, Any],
+    ) -> None:
+        """Queue a fixed confirmation only after successful execution."""
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            return
+
+        confirmations = {
+            "open_app": "Opening application.",
+            "open_browser": "Opening browser.",
+            "minimize_all": "Minimizing windows.",
+            "screenshot": "Screenshot taken.",
+        }
+        message = confirmations.get(action)
+        if message is None:
+            return
+
+        tts = getattr(self, "tts", None)
+        if tts is None or not getattr(tts, "enabled", True):
+            return
+
+        threading.Thread(
+            target=self._speak_safely,
+            args=(message,),
+            daemon=True,
+            name="aos-tts",
+        ).start()
+
+    def _speak_safely(self, text: str) -> None:
+        """Keep speech errors isolated from the kernel pipeline."""
+        try:
+            self.tts.speak(text)
+        except Exception as exc:
+            self.log.warning(f"[TTS] Speech output failed: {exc}")
+
     def run(self, gesture_engine) -> None:
         """Boot the orchestrator.  Starts the ingest bridge thread and
         enters the async event loop on the calling (main) thread.
@@ -577,6 +760,10 @@ class CentralOrchestrator:
             self._executor.shutdown(wait=False)
             if self._ingest_thread and self._ingest_thread.is_alive():
                 self._ingest_thread.join(timeout=2)
+            try:
+                self.tts.close()
+            except Exception as exc:
+                self.log.warning(f"[TTS] Shutdown failed: {exc}")
             self.log.info("[ORCHESTRATOR] Shutdown complete")
 
     async def _async_main(self) -> None:
