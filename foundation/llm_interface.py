@@ -50,6 +50,7 @@ class LLMInterface:
                     "model": self.model,
                     "system": system_prompt,
                     "prompt": prompt,
+                    "format": "json",
                     "stream": False,
                     "options": {"temperature": self.temperature}
                 }, timeout=self.timeout)

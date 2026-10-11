@@ -2,19 +2,20 @@
 # AURA-OS — Perception Layer
 # gesture_engine.py — Camera + MediaPipe hand gesture detection engine
 # Author: Samala Shashanth | Project: AURA-OS
-
-import os
-os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
-os.environ["QT_QPA_PLATFORM"] = "xcb"  # suppress Qt threading warnings in OpenCV
-import cv2  # type: ignore
+import cv2
 import math
 import mediapipe as mp  # type: ignore
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 import time
 import threading
 import queue
-from typing import Any, Dict, Optional, Tuple
-import pyautogui  # type: ignore
-from perception.gesture_stabilizer import GestureStabilizer  # type: ignore
+from perception.intent_signal import HumanIntentSignal
+from perception.gesture_stabilizer import GestureStabilizer
+import os
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+os.environ["QT_QPA_PLATFORM"] = "xcb"  # suppress Qt threading warnings in OpenCV
+
 
 class GestureEngine:
     """Real-time hand gesture detection using MediaPipe."""
@@ -30,16 +31,30 @@ class GestureEngine:
         self.cooldown_ms = perception_cfg.get("gesture_cooldown_ms", 500)
 
         # MediaPipe setup
-        self.mp_hands: Any = mp.solutions.hands
-        self.mp_draw: Any = mp.solutions.drawing_utils
-        self.hands: Any = self.mp_hands.Hands(
-            max_num_hands=self.max_hands,
-            min_detection_confidence=self.detection_confidence,
+        # MediaPipe Tasks setup
+        model_path = perception_cfg.get(
+            "hand_landmarker_model",
+            "models/hand_landmarker.task",
+        )
+
+        base_options = mp_python.BaseOptions(
+            model_asset_path=model_path,
+        )
+
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=self.max_hands,
+            min_hand_detection_confidence=self.detection_confidence,
+            min_hand_presence_confidence=self.detection_confidence,
             min_tracking_confidence=self.tracking_confidence,
         )
 
+        self.hands = vision.HandLandmarker.create_from_options(options)
+
         # Screen size for coordinate mapping
-        self._screen_w, self._screen_h = pyautogui.size()
+        self._pyautogui = __import__("pyautogui")
+        self._screen_w, self._screen_h = self._pyautogui.size()
 
         # Gesture stabilizer for debouncing
         gesture_stability = perception_cfg.get("gesture_stability_threshold", 3)
@@ -49,8 +64,8 @@ class GestureEngine:
             cooldown_ms=gesture_cooldown
         )
 
+        self._gesture_queue = queue.Queue()
         # State
-        self._gesture_queue: queue.Queue[Dict[str, Any]] = queue.Queue()
         self._running: Any = False
         self._last_gesture_time: float = 0
         self._last_gesture: Optional[str] = None
@@ -98,7 +113,7 @@ class GestureEngine:
 
         Two checks:
         1. Handedness classification confidence (from MediaPipe's
-           ``multi_handedness``) must exceed the configured minimum.
+           ``handedness``) must exceed the configured minimum.
            NOTE: We use this instead of per-landmark ``visibility`` because
            MediaPipe hands do NOT reliably populate the visibility field
            (it is always ~0.0 for hand landmarks).
@@ -246,33 +261,47 @@ class GestureEngine:
 
                     frame = cv2.flip(frame, 1)
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    result = self.hands.process(rgb)  # type: ignore
+
+                    mp_image = mp.Image(
+                        image_format=mp.ImageFormat.SRGB,
+                        data=rgb,
+                    )
+
+                    timestamp_ms = int(time.time() * 1000)
+
+                    result = self.hands.detect_for_video(
+                        mp_image,
+                        timestamp_ms,
+                    )  # type: ignore
 
                     gesture = None
                     fingertip = None
 
-                    if result.multi_hand_landmarks:  # type: ignore
-                        for idx, hand_landmarks in enumerate(result.multi_hand_landmarks):  # type: ignore
+                    if result.hand_landmarks:
+                        for idx, hand_landmarks in enumerate(result.hand_landmarks):
                             # Extract handedness for correct thumb detection
                             hand_label = "Right"
                             handedness_score = 1.0
-                            if result.multi_handedness:  # type: ignore
-                                hand_label = result.multi_handedness[idx].classification[0].label  # type: ignore
-                                handedness_score = result.multi_handedness[idx].classification[0].score  # type: ignore
+
+                            if result.handedness:
+                                hand_label = result.handedness[idx][0].category_name
+                                handedness_score = result.handedness[idx][0].score
 
                             if show_video:
-                                self.mp_draw.draw_landmarks(
-                                    frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                                vision.drawing_utils.draw_landmarks(
+                                    frame,
+                                    hand_landmarks,
+                                    vision.HandLandmarksConnections.HAND_CONNECTIONS,
                                 )
 
                             # Reject phantom / ghost hand detections
-                            if not self._is_valid_hand(hand_landmarks.landmark, handedness_score):
+                            if not self._is_valid_hand(hand_landmarks, handedness_score):
                                 continue
 
-                            gesture = self.classify(hand_landmarks.landmark, hand_label)
+                            gesture = self.classify(hand_landmarks, hand_label)
 
                             # Track index fingertip (landmark 8) for POINT gesture
-                            tip = hand_landmarks.landmark[8]
+                            tip = hand_landmarks[8]
                             fingertip = {
                                 "x": tip.x,  # 0.0 to 1.0 (left to right)
                                 "y": tip.y,  # 0.0 to 1.0 (top to bottom)
@@ -329,18 +358,25 @@ class GestureEngine:
                         # Map smoothed normalised coords → screen pixel space with boundary clamp
                         screen_x = max(0, min(int(self._smooth_prev_x * self._screen_w), self._screen_w - 1))
                         screen_y = max(0, min(int(self._smooth_prev_y * self._screen_h), self._screen_h - 1))  # type: ignore[arg-type]
-                        pyautogui.moveTo(screen_x, screen_y, _pause=False)
+                        self._pyautogui.moveTo(screen_x, screen_y, _pause=False)
                         self._last_screen_pos = (screen_x, screen_y)
                         last_action_text = f">> POINT ({screen_x}, {screen_y})"
                         # Still emit event but less frequently for logging
                         now = time.time() * 1000
                         if now - self._last_gesture_time > self.cooldown_ms:
-                            self._gesture_queue.put({
-                                "gesture": gesture,
-                                "timestamp": time.time(),
-                                "fingertip": fingertip,
-                                "screen_pos": (screen_x, screen_y),
-                            })
+                            signal = self._create_intent_signal(
+                                gesture,
+                                time.time(),
+                                target=(screen_x, screen_y),
+                                raw={
+                                    "gesture": gesture,
+                                    "fingertip": fingertip,
+                                    "screen_pos": (screen_x, screen_y),
+                                },
+                            )
+
+                            if signal is not None:
+                                self._gesture_queue.put(signal)
                             self._last_gesture = gesture
                             self._last_gesture_time = now
 
@@ -353,14 +389,21 @@ class GestureEngine:
                                     now - self._last_gesture_time > self.cooldown_ms):
                                 # Click at last known position (don't move cursor)
                                 if self._last_screen_pos:
-                                    pyautogui.click(self._last_screen_pos[0], self._last_screen_pos[1], _pause=False)  # type: ignore
+                                    self._pyautogui.click(self._last_screen_pos[0], self._last_screen_pos[1], _pause=False)  # type: ignore
                                 else:
-                                    pyautogui.click(_pause=False)  # type: ignore
-                                self._gesture_queue.put({
-                                    "gesture": "PINCH",
-                                    "timestamp": time.time(),
-                                    "screen_pos": self._last_screen_pos,
-                                })
+                                    self._pyautogui.click(_pause=False)  # type: ignore
+                                signal = self._create_intent_signal(
+                                    "PINCH",
+                                    time.time(),
+                                    target=self._last_screen_pos,
+                                    raw={
+                                        "gesture": "PINCH",
+                                        "screen_pos": self._last_screen_pos,
+                                    },
+                                )
+
+                                if signal is not None:
+                                    self._gesture_queue.put(signal)
                                 self._last_gesture = "PINCH"
                                 self._last_gesture_time = now
                                 last_action_text = f">> CLICK at {self._last_screen_pos}"
@@ -376,11 +419,18 @@ class GestureEngine:
                                 elapsed = time.time() - self._gesture_hold_start
                                 if elapsed >= 3.0:
                                     if not self._gesture_executed:
-                                        self._gesture_queue.put({
-                                            "gesture": gesture,
-                                            "timestamp": time.time(),
-                                            "fingertip": fingertip,
-                                        })
+                                        signal = self._create_intent_signal(
+                                            gesture,
+                                            time.time(),
+                                            target=self._last_screen_pos,
+                                            raw={
+                                                "gesture": gesture,
+                                                "fingertip": fingertip,
+                                            },
+                                        )
+
+                                        if signal is not None:
+                                            self._gesture_queue.put(signal)
                                         last_action_text = f">> {gesture} (EXECUTED)"
                                         self._last_gesture = gesture
                                         self._last_gesture_time = time.time() * 1000
@@ -392,11 +442,18 @@ class GestureEngine:
                         else:
                             # Other gestures: use gesture stabilizer for debouncing
                             if self.stabilizer.should_accept(gesture):
-                                self._gesture_queue.put({
-                                    "gesture": gesture,
-                                    "timestamp": time.time(),
-                                    "fingertip": fingertip,
-                                })
+                                signal = self._create_intent_signal(
+                                    gesture,
+                                    time.time(),
+                                    target=self._last_screen_pos,
+                                    raw={
+                                        "gesture": gesture,
+                                        "fingertip": fingertip,
+                                    },
+                                )
+
+                                if signal is not None:
+                                    self._gesture_queue.put(signal)
                                 last_action_text = f">> {gesture} (STABLE)"
                                 self._last_gesture = gesture
                                 self._last_gesture_time = time.time() * 1000
@@ -429,6 +486,38 @@ class GestureEngine:
                     print(f"[PERCEPTION] Error destroying windows: {e}")
 
             print("[PERCEPTION] Gesture engine stopped.")
+
+    def _create_intent_signal(
+            self,
+            gesture: str,
+            timestamp: float,
+            target=None,
+            raw=None,
+    ) -> HumanIntentSignal | None:
+            """Convert an accepted gesture into a HumanIntentSignal."""
+
+            intent_map = {
+                "POINT": "move_cursor",
+                "PINCH": "click",
+                "THREE": "open_app",
+                "FOUR": "open_browser",
+                "FIVE": "minimize_all",
+                "FIST": "screenshot",
+            }
+
+            intent = intent_map.get(gesture)
+
+            if intent is None:
+                return None
+
+            return HumanIntentSignal(
+                modality="gesture",
+                intent=intent,
+                target=target,
+                confidence=1.0,
+                timestamp=timestamp,
+                raw=raw or {"gesture": gesture},
+            )
 
     def start(self, show_video=True, threaded=True):
         """

@@ -16,7 +16,7 @@ from foundation.action_validator import ActionValidator, ValidationError, VALID_
 
 
 # ── Vector 1: _parse_json Regex Filter — 50 Chaotic Payloads ─────────────
-def test_parse_json_chaotic_inputs():
+def _check_test_parse_json_chaotic_inputs():
     """Inject 50 malformed/chaotic strings into LLMInterface._parse_json().
     Every single one must either return valid parsed JSON or trigger the
     fallback dict with action='do_nothing'. Zero unhandled exceptions."""
@@ -114,7 +114,7 @@ def test_parse_json_chaotic_inputs():
 
 
 # ── Vector 2: Fallback Dictionary Enforcement ─────────────────────────────
-def test_fallback_enforcement():
+def _check_test_fallback_enforcement():
     """Verify _fallback() always returns the canonical safe-action dict
     with exact key set {action, parameters, reasoning, latency_ms}."""
     print("\n" + "=" * 72)
@@ -158,7 +158,7 @@ def test_fallback_enforcement():
 
 
 # ── Vector 3: ActionValidator Boundary Sweep ──────────────────────────────
-def test_action_validator_boundaries():
+def _check_test_action_validator_boundaries():
     """Exhaustive boundary check on ActionValidator.validate_action().
     Tests every registered action with correct params, then verifies
     rejection of invalid actions, missing required params, and type mismatches."""
@@ -284,7 +284,7 @@ def test_action_validator_boundaries():
 
 
 # ── Vector 4: 50-Loop Sequential parse_json + validate Stress ────────────
-def test_sequential_parse_validate_stress():
+def _check_test_sequential_parse_validate_stress():
     """Run 50 sequential loops: generate chaotic markdown-wrapped strings,
     pipe through _parse_json → ActionValidator.validate_action chain.
     Verify fallback dict 100% enforcement on non-parseable inputs."""
@@ -345,16 +345,37 @@ def test_sequential_parse_validate_stress():
 
 
 # ── Runner ────────────────────────────────────────────────────────────────
+def test_parse_json_chaotic_inputs():
+    result = _check_test_parse_json_chaotic_inputs()
+    assert result, "Chaotic JSON parsing violated the safe fallback contract"
+
+
+def test_fallback_enforcement():
+    result = _check_test_fallback_enforcement()
+    assert result, "Fallback dictionary structure is incorrect"
+
+
+def test_action_validator_boundaries():
+    result = _check_test_action_validator_boundaries()
+    assert result, "ActionValidator boundary checks failed"
+
+
+def test_sequential_parse_validate_stress():
+    result = _check_test_sequential_parse_validate_stress()
+    assert result, "Unexpected exception in sequential parse/validate stress test"
+
+
+
 def run_all():
     print("\n" + "#" * 72)
     print("#  AURA-OS  Layer 4 — Foundation Determinism Suite")
     print("#" * 72)
 
     results = {}
-    results["L4-001_parse_json_chaos"] = test_parse_json_chaotic_inputs()
-    results["L4-002_fallback_struct"] = test_fallback_enforcement()
-    results["L4-003_validator_boundary"] = test_action_validator_boundaries()
-    results["L4-004_stress_50_loops"] = test_sequential_parse_validate_stress()
+    results["L4-001_parse_json_chaos"] = _check_test_parse_json_chaotic_inputs()
+    results["L4-002_fallback_struct"] = _check_test_fallback_enforcement()
+    results["L4-003_validator_boundary"] = _check_test_action_validator_boundaries()
+    results["L4-004_stress_50_loops"] = _check_test_sequential_parse_validate_stress()
 
     print("\n" + "=" * 72)
     print("  LAYER 4 SUMMARY")

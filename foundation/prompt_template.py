@@ -3,7 +3,7 @@
 # Author: Samala Shashanth | Project: AURA-OS
 
 SYSTEM_PROMPT = """You are AURA-OS, an intelligent agentic operating system.
-You receive hand gesture inputs detected by a camera and decide what mouse/keyboard/OS action to perform.
+You receive human intent signals from AURA-OS perception systems and decide what mouse/keyboard/OS action to perform.
 ALWAYS reply with ONLY valid JSON in exactly this format, nothing else:
 {"action": "<action_name>", "parameters": {}, "reasoning": "<one line explanation>"}
 
@@ -16,27 +16,40 @@ volume_up, volume_down, play_pause,
 lock_screen, do_nothing
 
 Rules:
-- Pick the single most appropriate action for the gesture.
+- Pick the single most appropriate action for the detected intent.
 - If unsure, use "do_nothing".
 - Keep reasoning under 15 words.
 - Never output anything except the JSON object."""
 
 
-def build_prompt(gesture, context=None, extra_info=None):
+def build_prompt(
+    gesture=None,
+    context=None,
+    extra_info=None,
+    intent=None,
+):
     """
-    Build a prompt for the LLM from a detected gesture.
+    Build a prompt for the LLM from a legacy gesture or semantic intent.
+
+    The legacy ``gesture`` argument remains supported for KernelLoop.
+    The active semantic path should provide ``intent`` instead.
 
     Args:
-        gesture: Name of detected gesture (e.g. 'FIST', 'OPEN_PALM')
-        context: Uppercase context token from AppContextManager (e.g. 'BROWSER', 'XFCE4-TERMINAL')
-        extra_info: Optional dict with additional context (e.g. battery, finger count)
+        gesture: Legacy gesture token, e.g. 'FIST'.
+        context: Uppercase context token from AppContextManager.
+        extra_info: Optional dict with additional context.
+        intent: Semantic HumanIntent value, e.g. 'open_app'.
 
     Returns:
-        Formatted prompt string
+        Formatted prompt string.
     """
     if context is None:
         context = "DESKTOP"
-    prompt = f"Gesture detected: {gesture}\nActive context: {context}"
+
+    if intent is not None:
+        prompt = f"Intent detected: {intent}\nActive context: {context}"
+    else:
+        prompt = f"Gesture detected: {gesture}\nActive context: {context}"
 
     if extra_info:
         for key, value in extra_info.items():

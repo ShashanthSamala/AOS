@@ -4,6 +4,8 @@
 
 import time
 
+from perception.intent_signal import HumanIntentSignal
+
 
 class ContextManager:
     """Stores recent gesture→action interactions for LLM context."""
@@ -29,6 +31,42 @@ class ContextManager:
             "result": str(result) if result else None,
             "timestamp": time.time(),
         }
+        self._history.append(entry)
+
+        # Trim to max size
+        if len(self._history) > self.max_history:
+            self._history = self._history[-self.max_history:]
+
+    def add_intent(
+        self,
+        signal: HumanIntentSignal,
+        action,
+        reasoning="",
+        result=None,
+    ):
+        """Store a real HumanIntentSignal alongside the resulting action.
+
+        This path is intentionally independent from the legacy add() method.
+        The original signal object and its semantic metadata are preserved
+        without reconstructing or fabricating a HumanIntentSignal.
+        """
+        if not isinstance(signal, HumanIntentSignal):
+            raise TypeError(
+                "signal must be a HumanIntentSignal"
+            )
+
+        entry = {
+            "intent_signal": signal,
+            "intent": signal.intent,
+            "modality": signal.modality,
+            "target": signal.target,
+            "confidence": signal.confidence,
+            "action": action,
+            "reasoning": reasoning,
+            "result": str(result) if result else None,
+            "timestamp": signal.timestamp,
+        }
+
         self._history.append(entry)
 
         # Trim to max size
@@ -62,9 +100,14 @@ class ContextManager:
 
         lines = []
         for entry in recent:
-            lines.append(
-                f"Gesture: {entry['gesture']} → Action: {entry['action']}"
-            )
+            if "intent_signal" in entry:
+                lines.append(
+                    f"Intent: {entry['intent']} → Action: {entry['action']}"
+                )
+            else:
+                lines.append(
+                    f"Gesture: {entry['gesture']} → Action: {entry['action']}"
+                )
         return "\n".join(lines)
 
     def clear(self):

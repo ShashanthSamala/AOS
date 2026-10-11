@@ -3,7 +3,7 @@
 
 # LLM Settings
 llm:
-  model: "tinyllama"
+  model: "qwen:4b"
   api_url: "http://localhost:11434/api/generate"
   temperature: 0.1
   timeout: 60
@@ -17,6 +17,7 @@ perception:
   tracking_confidence: 0.5
   gesture_cooldown_ms: 500     # minimum time between gesture actions
   cursor_smoothing_alpha: 0.35 # EMA factor for POINT cursor smoothing (0.1 = very smooth, 1.0 = raw/no filter)
+  hand_landmarker_model: "models/hand_landmarker.task"
 
   # Corner reach — virtual margin mapping (central zone of camera → full screen)
   edge_margin: 0.10            # 10% margin each side; 0.10..0.90 camera → 0..screen
@@ -68,6 +69,19 @@ kernel:
   temporal_filter_ms: 300        # Deduplication window in milliseconds
   app_context_enabled: true      # Active window awareness (default enabled)
   app_context_update_freq: 5     # Update app context every N gestures
+
+
+# Local text-to-speech settings
+tts:
+  enabled: true
+  python: "~/.venvs/aos-tts/bin/python"
+  model_id: "KittenML/kitten-tts-nano-0.8"
+  voice: "Bella"
+  output_device: 5
+  sample_rate: 24000
+  speed: 1.5
+  timeout: 120
+
 
 # Resource Management
 resources:

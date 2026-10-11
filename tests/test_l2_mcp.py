@@ -142,7 +142,7 @@ def test_malformed_parameter_types():
     ok = failed == 0
     status = "PASS" if ok else "FAIL"
     print(f"  [{status}] {passed}/{total} malformed params caught safely")
-    return ok
+    assert ok, "Malformed parameter cases failed"
 
 
 # ── Vector 2: Shell Injection Boundary ───────────────────────────────────
@@ -182,7 +182,7 @@ def test_shell_injection_boundary():
     ok = passed == total
     status = "PASS" if ok else "FAIL"
     print(f"  [{status}] {passed}/{total} injection payloads blocked")
-    return ok
+    assert ok, "Shell injection payloads were not blocked"
 
 
 # ── Vector 3: Unknown Action Dispatch ────────────────────────────────────
@@ -221,7 +221,7 @@ def test_unknown_action_dispatch():
     ok = passed == total
     status = "PASS" if ok else "FAIL"
     print(f"  [{status}] {passed}/{total} unknown actions handled gracefully")
-    return ok
+    assert ok, "Unknown actions were not handled correctly"
 
 
 # ── Vector 4: Timeout Protection ─────────────────────────────────────────
@@ -248,7 +248,7 @@ def test_timeout_protection():
     print(f"  Within window     : {within_window}  (< 4.0s)")
     print(f"  Result status     : {result.get('status')}")
     print(f"  [{status}] Timeout protection verified")
-    return ok
+    assert ok, "Timeout protection failed"
 
 
 # ── Vector 5: Valid Execution Path ───────────────────────────────────────
@@ -286,7 +286,7 @@ def test_valid_execution_path():
     ok = passed == total
     status = "PASS" if ok else "FAIL"
     print(f"  [{status}] {passed}/{total} valid executions returned correct results")
-    return ok
+    assert ok, "Valid tool execution results did not match"
 
 
 # ── Vector 6: Concurrent Dispatch Stress ─────────────────────────────────
@@ -330,7 +330,7 @@ def test_concurrent_dispatch_stress():
         for e in errors[:5]:
             print(f"    {e}")
     print(f"  [{status}] Concurrent dispatch stress verified")
-    return ok
+    assert ok, "Concurrent dispatch stress test failed"
 
 
 # ── Vector 7: list_tools / has_tool Registry Integrity ───────────────────
@@ -370,7 +370,7 @@ def test_registry_integrity():
     print(f"  Structure valid   : {structure_ok}")
     print(f"  has_tool correct  : {has_ok} / not_found={has_not_ok}")
     print(f"  [{status}] Registry integrity verified")
-    return ok
+    assert ok, "Tool registry integrity check failed"
 
 
 # ── Runner ────────────────────────────────────────────────────────────────

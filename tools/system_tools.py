@@ -218,7 +218,12 @@ def screenshot():
         screenshot_dir.mkdir(exist_ok=True, parents=True)
         screenshot_path = screenshot_dir / f"screenshot_{timestamp}.png"
 
-        # Try scrot first
+        # Phase 4 technical debt:
+        # scrot is X11-only and is not the native screenshot path for KDE Wayland.
+        # Replace this legacy fallback chain with Spectacle via KWin D-Bus.
+        # PyScreeze ResourceWarnings may also arise from its own scrot lookup;
+        # document and investigate that separately rather than suppressing warnings.
+        # Try scrot first (legacy fallback; retained until Phase 4).
         try:
             subprocess.run(
                 ["scrot", str(screenshot_path)],
