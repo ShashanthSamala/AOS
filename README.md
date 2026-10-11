@@ -271,6 +271,3 @@ AOS will initialize the gesture engine, orchestrator, and LLM interface.
 Point a hand at the camera. POINT moves the cursor. PINCH clicks.
 Other gestures trigger semantic resolution through the kernel.
 
----
-
-```
